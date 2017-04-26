@@ -1,0 +1,523 @@
+---
+title: "Tidy the bacteria 2012 OTU table"
+author: "Marissa Lee"
+date: "4/26/2017"
+output: html_document
+---
+
+
+
+## Aim   
+Check and tidy the OTU tables created from Tyson Experiment MiSeq amplicon data (ITS, LSU, 16S) from the 2012 and 2014 harvests
+
+## Description of up-stream processing
+Raw sequence data was processed using bash shell scripts on the Zanne Lab Virtual Machine.  See the GitHub repository Zanne-Lab/MicrobialPipelines.  There are unique shell scripts for each amplified gene region (ITS, LSU, 16S) because each requires a different reference database.  There are unique shell scripts for each harvest (2012, 2014) because each MiSeq run was pre-processed differently.
+```{r setup, include=FALSE}
+# Set global parameters
+
+#knitr options
+knitr::opts_chunk$set(cache = FALSE)
+
+#libraries
+library(plyr)
+library(tidyr)
+
+#custom functions
+source("./code/help_tidyMicrobData.R")
+```
+Read in 2012 16S OTU table and study metadata
+```{r readIn, include = FALSE}
+
+# read-in OTU tables
+table.names<-c("201216S")
+fileName.part1<-"./data/microbes/otuTables/otuTable_"
+fileName.part2<- ".tab"
+otuTab.list<-ReadOTUcsv(table.names, fileName.part1, fileName.part2)
+rm(fileName.part1, fileName.part2)
+
+## study sample identifiers
+plotLoc<-read.csv("./data_Rsynth/studyMetadata/plotLoc.csv")
+logTrt<-read.csv("./data_Rsynth/studyMetadata/logTrt.csv")
+logID<-read.csv("./data_Rsynth/studyMetadata/logID.csv")
+logmicrobID<-read.csv("./data_Rsynth/studyMetadata/logmicrobID.csv")
+logmicrobID.tmp<-merge(logmicrobID, logID, all.x=TRUE)
+geneNames<-c("16S")
+
+## Identifiers for 2012 OTU data
+barcodes<-read.delim("./data/studyMetadata/Identified_Barcodes_samples_Corrected.txt", stringsAsFactors = FALSE)  
+barcodes<-barcodes[,c("Barcode","Sample")] # simplify barcode/sample look up table
+barcodes<-separate(barcodes, col=Sample, into=c("sampleName","sampleType"), sep="z", fill = "right", remove=FALSE) # make sample name match "sampleName" in logmicrobID df
+# identify samples that are associated with the rot plot study and are analytical controls
+barcodes[barcodes$sampleType == "" & !is.na(barcodes$sampleType), "sampleType"]<-"rotplot"
+barcodes[grepl("Pos_",barcodes$sampleName), "sampleType"]<-"positiveControl"
+barcodes[grepl("Neg_",barcodes$sampleName), "sampleType"]<-"negativeControl"
+barcodes[is.na(barcodes$sampleType),"sampleType"]<-"WMstudy"
+# add logmicrobIDs to barcode lookup for 2012 data
+logmicrobID.tmp12<-subset(logmicrobID.tmp, yrharv==2012)
+barcodes<-merge(barcodes, logmicrobID.tmp12, by="sampleName", all.x=TRUE)
+
+
+
+
+```
+
+
+
+
+## 1. Tidy 2012 OTU tables
+Reshape the OTU table so that samples are rows and OTU "taxa" are columns. Make sure samples are identified with "sampleName". Write tidy versions of the 2012 OTU tables to "./data_Rsynth/otuTables_tidy/otuTable_[year][gene].csv"
+```{r tidy12, include = FALSE}
+
+#isolate and check barcodes
+otuTabs12<-otuTab.list[grepl("2012",names(otuTab.list))] # isolate just the 2012 OTU tables
+otuTab.barcodes<-llply(otuTabs12, colnames) # extract the list of barcodes from each otutable
+# make sure all the barcodes from the OTU table are in the barcode lookup df
+i<-0
+for(i in 1:length(otuTabs12)){
+  print(sum(!otuTab.barcodes[[i]] %in% barcodes$Barcode)) # if sum 0, then everything is fine
+} #good if all are 0
+
+# transform otutables so that samples are rows and taxa are columns
+otuTabs12.t<-llply(otuTabs12, t)
+
+# change rownames from barcodes to sampleNames
+otuTabs12.ta<-BarcodeToSamp(otuTab.list.t=otuTabs12.t, lookupTab=barcodes, yrharv=2012)
+## write tidy OTU tables
+fileName.part1<-"./data_Rsynth/otuTables_tidy/otuTable_"
+fileName.part2<-".csv"
+WriteOTUcsv(otuTab.list.t=otuTabs12.ta, fileName.part1, fileName.part2)
+
+```  
+Identify samples relevant to rotplot study and write tidy versions to "./data_Rsynth/otuTables_tidy/otuTable_[year][gene]_rotplot.csv"
+```{r tidy12_rot, include=FALSE}
+
+#identify rotplot samples
+otuTabs12.rotplot<-FindSamples(otuTab.list.t=otuTabs12.ta, lookupTab=barcodes)
+
+## write tidy OTU tables for rotplot samples
+fileName.part1<-"./data_Rsynth/otuTables_tidy/otuTable_"
+fileName.part2<-"_rotplot.csv"
+WriteOTUcsv(otuTab.list.t=otuTabs12.rotplot, fileName.part1, fileName.part2)
+
+```
+
+
+
+
+
+## 2. Summarize the OTU datasets
+Summarize the sampling depth (i.e. the number of sequences per sample) for each gene and year of data
+```{r sampDepth, echo=FALSE}
+
+numSampsList<-list()
+rowSumList<-list()
+rowRichList<-list()
+i<-0
+for(i in 1:length(otuTabs12.ta)){
+  otu.tmp<-data.frame(apply(otuTabs12.ta[[i]], 2, function(x) as.numeric(as.character(x)))) # everything had been coded as a factor, ugh
+  
+  #number of samples
+  numSampsList[[i]]<-dim(otu.tmp)[1]
+  
+  #summarize the number of reads per sample
+  rowSumdf<-data.frame(rowSumVals=rowSums(otu.tmp))
+  summ.df<-data.frame(summary(rowSumdf))
+  summ.df<-separate(summ.df, col=Freq, into=c("stat","val"), sep=":")
+  summ.df<-summ.df[,c("stat","val")]
+  resultSum.df<-rbind(summ.df, data.frame(stat="sd", val=round(sd(rowSumdf$rowSumVals), digits = 0)))
+  rowSumList[[i]]<-resultSum.df
+  
+  #summarize the OTU richness per sample
+  rowRich<-data.frame(rowRichVals=apply(otu.tmp, 1, function(x) sum(x !=0)))
+  summ.rich<-data.frame(summary(rowRich))
+  summ.rich<-separate(summ.rich, col=Freq, into=c("stat","val"), sep=":")
+  summ.rich<-summ.rich[,c("stat","val")]
+  resultRich.df<-rbind(summ.rich, data.frame(stat="sd", val=round(sd(rowRich$rowRichVals), digits = 0)))
+  rowRichList[[i]]<-resultRich.df
+  
+}
+names(numSampsList)<-names(rowSumList)<-names(rowRichList)<-geneNames
+numSampsdf.12<-ldply(numSampsList, data.frame)
+colnames(numSampsdf.12)[2]<-"numSamps"
+rowSumdf.12<-ldply(rowSumList, data.frame)
+rowRichdf.12<-ldply(rowRichList, data.frame)
+colnames(numSampsdf.12)[1]<-colnames(rowSumdf.12)[1]<-colnames(rowRichdf.12)[1]<-"gene"
+numSampsdf.12$year<-rowSumdf.12$year<-rowRichdf.12$year<-2012
+
+numSampsdf.12 #number of samples
+rowSumdf.12 #number of reads per sample
+rowRichdf.12 #number of OTUs per sample
+
+```
+Compile a master list of the rotplot samples for which we have microbial sequence data. Write tidy version to "./data_Rsynth/otuTables_tidy/otuSamples_rotplot.csv"
+```{r sampList, echo=FALSE}
+
+#extract a list of sample names from the OTU table
+names(otuTabs12.rotplot)<-geneNames
+samps.12<-ldply(llply(otuTabs12.rotplot, row.names), data.frame)
+samps.12$yrharv<-2012
+colnames(samps.12)<-c("gene","sampleName","yrharv")
+
+#prep barcodes to serve as sample name identifiers
+lookup.12<-subset(barcodes, sampleType=="rotplot")
+lookup.12.s<-lookup.12[,c("sampleName","Barcode","logid","logmicrobid","logLoc","rep_code","plot","symbol","logtrt","yrdeploy","yrharv","pullDate","bag")]
+
+#merge samps and lookup into 1 dataframe
+samps.s<-merge(samps.12, lookup.12.s, by=c("sampleName","yrharv"), all.x=TRUE)
+
+########################################
+## write list of OTU samples
+
+write.csv(samps.s, file = "./data_Rsynth/otuTables_tidy/otuTables_SampleList.csv", row.names = FALSE)
+
+```
+**Summarize the rotplot study design:**
+*Description of column names*
+yrharv: Year the log sample was harvested, here 2012  
+gene: Gene that was amplified, here 16S for bacteria  
+Barcode: Used in sequencing to identify unique samples  
+logid: Unique id for each log sample  
+logmicrobid: Unique id for each sample of sawdust taken from a log sample  
+logLoc: location on log that the sawdust sample was taken; either top (t) or bottom (b)  
+plot: Unique id for each plot in which a log sample was deployed in the field (1-8)  
+logtrt: Identity of the log treatment (see logid lookup table...)  
+yrdeploy: Year the log sample was deployed into the field (2009 or 2011)  
+Don't worry about columns not listed here - that information has to do with other aspects of the project  
+```{r studyDesign, echo=FALSE}
+
+#ddply(samps.s, ~plot+logtrt, summarize,
+#      nMicroSamps=length(logmicrobid))
+
+```
+
+
+
+
+## 3. Tidy that taxonomy data. Write the tidy taxonomy data to the folder "data_Rsyth/taxonTables_tidy" and ammend with functional data where available (note: not available for bacteria). 
+```{r taxaCodes, echo=FALSE}
+#set up taxon hierarchy codes
+hier<-c("kingdom","phylum","class","order","family","genus","species")
+hier.code<-paste(substring(hier, 1, 1), "__", sep="")
+```
+ Do this for bacterial OTUs and taxonomy. This code is based on script in "format_RDPforFUNGuild.Rmd" that associates OTU data (e.g.data_Rsynth/otuTables_tidy/otuTable_201216S_rotplot.csv) and taxonomy data (e.g. data/microbes/classifiedRPD) for each sample. 
+```{r tidyTaxa_bact, echo = FALSE}
+otu.rotplot.bact<-list(otuTabs12.rotplot[["16S"]])
+table.names.bact<-table.names[grepl("16S", table.names)]
+
+#######################################
+# read in and expand data
+taxon.indx.list.bact<-list()
+i<-0
+for(i in 1:length(table.names.bact)){
+  fileName<-paste("./data/microbes/classifiedRDP/RDP_", table.names.bact[i],".txt", sep="")
+  rdp.table<-read.delim(fileName,  
+                        header=FALSE,                 
+                        stringsAsFactors = FALSE)
+  
+  #these next steps are really similar to the LSU function in'formatRDPforFUNGuild.Rmd'
+  
+  #a. simplify taxonomy
+  df.tmp <- rdp.table[, c("V1","V3","V5","V6","V8","V9","V11","V12","V14","V15","V17","V18","V20")]
+  colnames(df.tmp) <- c("OTUId","kingdom","k_perc","phylum","p_perc","class","c_perc","order","o_perc","family","f_perc","genus","g_perc")
+  
+  #strip out taxa identifiers with confidence estimate less than 50%
+  df.tmp[df.tmp$k_perc<0.5,"kingdom"]<-"unidentified"
+  df.tmp[df.tmp$p_perc<0.5,"phylum"]<-"unidentified"
+  df.tmp[df.tmp$c_perc<0.5,"class"]<-"unidentified"
+  df.tmp[df.tmp$o_perc<0.5,"order"]<-"unidentified"
+  df.tmp[df.tmp$f_perc<0.5,"family"]<-"unidentified"
+  df.tmp[df.tmp$g_perc<0.5,"genus"]<-"unidentified"
+  
+  #b. add missing columns
+  df.tmp$species <- "unidentified" 
+  
+  #c. replace columns that include "unidentified with just unidentified"
+  s<-0
+  COLS <- c("kingdom","phylum","class","order","family","genus","species")
+  for (s in 1:length(COLS)){
+    #pull out the current column
+    columnThing <- df.tmp[,COLS[s]]
+    #find "unidentified"s and replace cell with simple "unidentified"
+    columnThing[grepl("unidentified", columnThing)] <- "unidentified"
+    #update the column in the original dataframe
+    df.tmp[,COLS[s]] <- columnThing
+  }
+
+  #here's where this starts to differ from the LSU fxn referenced above...
+  #d. pull stuff together to make the simplified columns
+  perc <- df.tmp$g_perc
+  kingdom <- df.tmp$kingdom
+  phylum <- df.tmp$phylum
+  class <- df.tmp$class
+  order <- df.tmp$order
+  family <- df.tmp$family
+  genus <- df.tmp$genus
+  species <- df.tmp$genus
+  taxon_hier <- paste(paste("k__",kingdom, sep =""),
+                      paste("p__",phylum, sep =""),
+                      paste("c__",class, sep =""),
+                      paste("o__",order, sep =""),
+                      paste("f__",family, sep =""),
+                      paste("g__",genus, sep =""),
+                      paste("s__",species, " ...", sep =""), sep = ";")
+  
+  
+  curr.taxon.indx<-data.frame(OTUid=df.tmp$OTUId,
+                              percConfid=perc,
+                              species=species,
+                              taxon_hier=taxon_hier)
+  
+  #subset the taxon index using the OTUids present in the tidy OTU table -- these should match unless you ran FUNGuild on the whole OTU table (didn't first subset by rot plot samples)
+  curr.OTU.indx<-data.frame(OTUid=colnames(otu.rotplot.bact[[i]]))
+  curr.taxon.indx<-merge(curr.taxon.indx, curr.OTU.indx)
+  colnames(curr.taxon.indx)[colnames(curr.taxon.indx)=="species"]<-"genusSpecies"
+  
+  #expand taxon_hier
+  hier.expand.df<-ldply(strsplit(as.character(curr.taxon.indx$taxon_hier), split=";")) 
+  colnames(hier.expand.df)<-hier
+  #get rid of hier codes in front of data in each cell
+  t<-0
+  for(t in 1:length(colnames(hier.expand.df))){
+    hier.expand.df<-separate_(data=hier.expand.df, col=hier[t], into=c("drop", hier[t]), sep=hier.code[t])
+    hier.expand.df<-hier.expand.df[,colnames(hier.expand.df)!="drop"]
+  }
+  curr.taxon.indx<-data.frame(curr.taxon.indx, hier.expand.df)
+  
+  #save the curr.taxon.indx file
+  taxon.indx.list.bact[[i]]<-curr.taxon.indx
+}
+names(taxon.indx.list.bact)<-table.names.bact
+
+
+
+#######################################
+#deal with inconsistencies in labeling "unidentified" taxon levels, deal with species labels
+years<-c(2012)
+
+# 16S
+DFs<-paste(years, "16S", sep="") # dataframe identifiers within larger list
+i<-0
+for(i in 1:length(DFs)){
+  
+  #identify dataframe
+  df.tmp<-taxon.indx.list.bact[[DFs[i]]]
+  
+  #species pattern: (a) " ..." at the end
+  df.tmp$species<-unlist(strsplit(df.tmp$species, split=" ...", fixed=TRUE))
+  
+  #unidentified pattern: if current taxon level matches the higher taxon level, then the current level and below is "unidentified"
+  #1. make new colums to hold matching info
+  df.tmp$p_SAA<-NA
+  df.tmp$c_SAA<-NA
+  df.tmp$o_SAA<-NA
+  df.tmp$f_SAA<-NA
+  df.tmp$g_SAA<-NA
+  df.tmp$s_SAA<-NA
+  #2. identify where taxon names match the level above
+  df.tmp[df.tmp[,"phylum"] == df.tmp[,"kingdom"],"p_SAA"]<-"matchAbove" 
+  df.tmp[df.tmp[,"class"] == df.tmp[,"phylum"],"c_SAA"]<-"matchAbove"
+  df.tmp[df.tmp[,"order"] == df.tmp[,"class"],"o_SAA"]<-"matchAbove"
+  df.tmp[df.tmp[,"family"] == df.tmp[,"order"],"f_SAA"]<-"matchAbove"
+  df.tmp[df.tmp[,"genus"] == df.tmp[,"family"],"g_SAA"]<-"matchAbove"
+  df.tmp[df.tmp[,"species"] == df.tmp[,"genus"],"s_SAA"]<-"matchAbove"
+  #3. based on matching taxon names, fill-in the unidentifieds
+  df.tmp[!is.na(df.tmp$p_SAA) & !is.na(df.tmp$c_SAA) & !is.na(df.tmp$o_SAA) & !is.na(df.tmp$f_SAA) & !is.na(df.tmp$g_SAA) & !is.na(df.tmp$s_SAA), 
+         c("phylum","class","order","family","genus","species")] <- "unidentified"
+  df.tmp[!is.na(df.tmp$c_SAA) & !is.na(df.tmp$o_SAA) & !is.na(df.tmp$f_SAA) & !is.na(df.tmp$g_SAA) & !is.na(df.tmp$s_SAA),
+         c("class","order","family","genus","species")] <- "unidentified"
+  df.tmp[!is.na(df.tmp$o_SAA) & !is.na(df.tmp$f_SAA) & !is.na(df.tmp$g_SAA) & !is.na(df.tmp$s_SAA),
+         c("order","family","genus","species")] <- "unidentified"
+  df.tmp[!is.na(df.tmp$f_SAA) & !is.na(df.tmp$g_SAA) & !is.na(df.tmp$s_SAA),
+         c("family","genus","species")] <- "unidentified"
+  df.tmp[!is.na(df.tmp$g_SAA) & !is.na(df.tmp$s_SAA),
+         c("genus","species")] <- "unidentified"
+  df.tmp[!is.na(df.tmp$s_SAA),
+         c("species")] <- "unidentified"
+  
+  #get rid of scrap columns and save the clean dataframe in the original list
+  df.tmp<-df.tmp[,!grepl("_",colnames(df.tmp))]
+  taxon.indx.list.bact[[DFs[i]]]<-df.tmp
+}
+
+
+#######################################
+#write tidy taxon tables
+i<-0
+for(i in 1:length(table.names.bact)){
+  outFileName<-paste("./data_Rsynth/taxonTables_tidy/taxonTable_",table.names.bact[i],"tidy.tab", sep="")
+  write.table(taxon.indx.list.bact[[i]], file=outFileName, sep="\t", row.names=FALSE)
+}
+
+
+```
+
+
+
+
+
+## 4. Summarize the taxonomy coverage
+```{r coverageTaxa_bact, echo = FALSE}
+unk.summ.list<-list()
+i<-0
+for(i in 1:length(taxon.indx.list.bact)){
+  
+  #identify dataframe
+  tmp.df<-taxon.indx.list.bact[[i]]
+  
+  #count the number of unidentifieds at each level
+  unk.p<-tmp.df[tmp.df$phylum == "unidentified","OTUid"]
+  unk.c<-tmp.df[tmp.df$phylum != "unidentified" & tmp.df$class == "unidentified","OTUid"]
+  unk.o<-tmp.df[tmp.df$class != "unidentified" & tmp.df$order == "unidentified","OTUid"]
+  unk.f<-tmp.df[tmp.df$order != "unidentified" & tmp.df$family == "unidentified","OTUid"]
+  unk.g<-tmp.df[tmp.df$family != "unidentified" & tmp.df$genus == "unidentified","OTUid"]
+  unk.s<-tmp.df[tmp.df$genus != "unidentified" & tmp.df$species == "unidentified","OTUid"]
+  unk.list<-list(p=unk.p, c=unk.c, o=unk.o, f=unk.f, g=unk.g, s=unk.s)
+  unk.summ<-ldply(unk.list, length)
+  colnames(unk.summ)<-c("taxonLevel","numUnks")
+  
+  #add unknown across taxon levels
+  sh<-sum(unk.summ[unk.summ$taxonLevel %in% c("p","c","o","f","g","s"),"numUnks"]) #s_higher = unknown at species or above
+  gh<-sum(unk.summ[unk.summ$taxonLevel %in% c("p","c","o","f","g"),"numUnks"]) #g_higher = unknown at genus or above
+  fh<-sum(unk.summ[unk.summ$taxonLevel %in% c("p","c","o","f"),"numUnks"]) #f_higher = unknown at family or above
+  unk.h.row<-data.frame(taxonLevel=c("s_and_higher","g_and_higher","f_and_higher"), numUnks=c(sh,gh,fh))
+  unk.summ<-rbind(unk.summ, unk.h.row)
+  
+  #calculate the perc of unknowns relative to total number of otus
+  otus.total<-dim(tmp.df)[1]
+  unk.summ$percUnks<-round((unk.summ$numUnks / otus.total)*100, digits=2)
+  
+  #save summary dataframe
+  unk.summ.list[[i]]<-unk.summ
+}
+unk.summ.bact<-unk.summ.list
+names(unk.summ.bact)<-names(taxon.indx.list.bact)
+unk.summ.bact.df<-ldply(unk.summ.bact, data.frame)
+
+#identify percent unknown at the genus and family level
+arrange(subset(unk.summ.bact.df, taxonLevel %in% c("g_and_higher","f_and_higher")), taxonLevel)
+
+```
+
+
+
+
+
+## 5. Determine the number of reads that constitutes a sequencing failure.  Eliminate samples that do not have enough reads
+```{r, echo=FALSE}
+#for histograms
+library(ggplot2)
+library(gridExtra)
+
+#my ggplot template
+mytheme <- theme_bw(base_size = 10, base_family = "Helvetica") +
+  theme(panel.border = element_rect(colour = "black"),      #put a black box around the plotting area
+        axis.line = element_line(colour = "black"),                 #axis lines are in black
+        panel.grid.major = element_blank(),                         #turn off the gridlines
+        panel.grid.minor = element_blank(),
+        strip.text.x = element_text(face='bold.italic', hjust=0.05),         #turn off the x axis facet labels
+        strip.text.y = element_text(face='bold.italic', hjust=0.05),
+        strip.background = element_rect(fill = 'white', colour='black'),    #make y axis facet labels be italic and top justified
+        legend.key = element_blank(),                               #turn off box around legend
+        plot.title=element_text(hjust=0, vjust=0.5, face='bold'), #style and position of the panel label
+        plot.margin = unit(c(0.05,0.05,0.05,0.05),"in"))
+
+#put all tidy OTU tables into a list
+tidyOTUs<-list(otuTabs12.rotplot[['16S']])
+
+names(tidyOTUs)<-table.names
+
+hist.list<-list()
+i<-0
+for(i in 1:length(tidyOTUs)){
+  
+  #fix otu formats
+  df.otu<-data.frame(apply(tidyOTUs[[i]], 2, function(x) as.numeric(as.character(x)))) # everything had been coded as a factor, ugh
+  row.names(df.otu)<-as.character(row.names(tidyOTUs[[i]])) #add back the rownames
+  
+  #look at distribution of sequences per sample
+  seqPerSamp<-data.frame(val=rowSums(df.otu))
+  hist.list[[i]]<-ggplot(seqPerSamp, aes(x=val)) + geom_freqpoly() + 
+    scale_x_continuous(limits=c(0,200)) + geom_vline(xintercept=20, linetype=2) +
+    ggtitle(table.names[i]) +mytheme
+}
+names(hist.list)<-table.names
+
+hist.list[["201216S"]]
+#cut off of 20 reads per sample looks ok ... might want to try 50 reads/sample
+
+# How many samples do I loose it I use the 20 reads/sample cut off? Which samples are they?
+loss.list<-list()
+qualTrimOTUs<-list()
+i<-0
+for(i in 1:length(tidyOTUs)){
+  
+  #fix otu formats
+  df.otu<-data.frame(apply(tidyOTUs[[i]], 2, function(x) as.numeric(as.character(x)))) # everything had been coded as a factor, ugh
+  row.names(df.otu)<-as.character(row.names(tidyOTUs[[i]])) #add back the rownames
+  
+  #remove samples with fewer than 20 reads
+  seqPerSamp<-data.frame(val=rowSums(df.otu))
+  qualTrimOTUs[[i]]<-df.otu[seqPerSamp >= 20,]
+  
+  #which samples were discarded?
+  loss.list[[i]]<-row.names(df.otu[seqPerSamp < 20,])
+  
+}
+names(loss.list)<-table.names
+names(qualTrimOTUs)<-table.names
+
+loss.list
+loss.summ<-ldply(loss.list, length)
+colnames(loss.summ)<-c("yearGene","trimmedSamps")
+numSampsBefore<-ldply(tidyOTUs, dim)[2]
+loss.summ<-data.frame(loss.summ, numSampsBefore)
+colnames(loss.summ)[3]<-"initialNumbSamps"
+loss.summ$percSampsLost<-round((loss.summ$trimmedSamps / loss.summ$initialNumbSamps)*100, digits=2)
+loss.summ
+
+
+########################################
+## write tidy OTU tables
+#names(qualTrimOTUs)
+
+fileNames<-paste("./data_Rsynth/otuTables_tidy/otuTable_", names(qualTrimOTUs),"_rotplot.csv", sep="")
+i<-0
+for(i in 1:length(qualTrimOTUs)){
+  write.csv(qualTrimOTUs[[i]], file = fileNames[i], row.names = TRUE)
+}
+
+```
+
+
+
+
+## 6. Look at OTU richness and rarification curves after quality triming
+```{r, echo=FALSE}
+library(vegan)
+
+richness.list<-list()
+i<-0
+for(i in 1:length(qualTrimOTUs)){
+  
+  #fix otu formats
+  df.otu<-data.frame(apply(qualTrimOTUs[[i]], 2, function(x) as.numeric(as.character(x)))) # everything had been coded as a factor, ugh
+  row.names(df.otu)<-as.character(row.names(qualTrimOTUs[[i]])) #add back the rownames
+  
+  #summarize OTU richness
+  richness.list[[i]]<-summary(specnumber(df.otu)) #number of species
+  
+  #plot rarification curve
+  rarecurve(df.otu, step=500)
+  mtext(names(qualTrimOTUs)[i], side=3)
+  
+}
+names(richness.list)<-table.names
+ldply(richness.list)
+
+```
+
+
+
+
+
+

@@ -1,0 +1,25 @@
+species	species_code	numDecayYrs_2012	numDecayYrs_2014	plot	plot_code	plotWatershed	plotWatershedLocation	logLocation	logLocation_code	replicate	replicate_code_2012	replicate_code_2014
+ACRU	A	3	5	1-L	1	1	L	Top	t	1	Y	+
+AEGL	B	3	5	1-H	2	1	H	Bottom	b	2	Z	-
+AMAR	C	3	5	2-L	3	2	L					
+ASTR	D	3	5	2-H	4	2	H					
+CATO	E	3	5	3-L	5	3	L					
+CEOC	F	3	5	3-H	6	3	H					
+CEOC2	G	1	3	4-L	7	4	L					
+COFL	H	3	5	4-H	8	4	H					
+DIVI	I	3	5									
+FRAM	J	1	3									
+GLTR	K	3	5									
+JUNI	L	1	3									
+JUVI	M	3	5									
+JUVI2	N	1	3									
+LOMA	O	1	3									
+PIEC	P	1	3									
+PIST	Q	3	5									
+PLOC	R	3	5									
+PRSE/PRVI	S	3	5									
+QUAL	T	1	3									
+QUVE	U	3	5									
+QUVE2	V	1	3									
+ULRU	W	3	5									
+VIVU	X	3	5									

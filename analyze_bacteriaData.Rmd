@@ -1,0 +1,149 @@
+---
+title: "Analyse the effect of log treatment on bacteria community"
+author: "Marissa Lee"
+date: "4/26/2017"
+output: html_document
+---
+
+Load libraries and datasets
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#load libraries
+library(tidyverse)
+library(vegan)
+library(plyr)
+library(colorspace)
+
+#load datasets
+
+#logTrt
+logTrt<-read.csv("./data_Rsynth/studyMetadata/logTrt.csv")
+
+#samples
+sampList<-read.csv("data_Rsynth/otuTables_tidy/otuTables_SampleList.csv")
+plotLoc<-read.csv("data_Rsynth/studyMetadata/plotLoc.csv")
+sampList1<-merge(sampList, plotLoc, by="plot", sort=FALSE)
+sampList<-merge(sampList1, logTrt[,colnames(logTrt)!="yrdeploy"], by="logtrt", sort=FALSE)
+levels(sampList$bag) <- c(levels(sampList$bag), "none")
+sampList[is.na(sampList$bag), "bag"]<-"none"
+#read in log binomial data and merge it too
+logBinomials<-read.csv("data/studyMetadata/logBinomials.csv")
+x<-logBinomials[logBinomials$plank=="no",] #get rid of planks
+xx<-x[,c("species4","binomial","family","angio.gymno")]
+sampList2<-merge(sampList, xx)
+samples<-sampList2
+
+#otu table
+curr.gene='16S'
+curr.yrharv=2012
+table.name<-paste(curr.yrharv, curr.gene, sep="")
+fileName<-paste("./data_Rsynth/otuTables_tidy/otuTable_", table.name, "_rotplot.csv", sep = "")
+mat.otu<-read.csv(fileName, header=TRUE,                 #make the barcodes the headers
+                    stringsAsFactors = FALSE,    #don't automatically create factors
+                    row.names = 1)               #make the OTU ids the row names
+#match sample metadata and env data
+samples.sub<-subset(samples, sampleName %in% rownames(mat.otu) & gene == curr.gene & yrharv == curr.yrharv)
+mat.otu1<-data.frame(sampleName=rownames(mat.otu), mat.otu)
+mat.otu2<-merge(mat.otu1, samples.sub, by="sampleName")
+#isolate otu columns
+otuCols<-grepl("OTU_",colnames(mat.otu2))
+mat.otu<-mat.otu2[,otuCols]
+#isolate sample and env columns
+mat.samp<-mat.otu2[,!otuCols]
+#save it
+otu.its.12<-list(mat.otu=mat.otu, mat.samp=mat.samp)
+
+#
+source('code/fxns_makeDataset.R')
+source('code/load_plottingParams.R')
+dataset_overlap_otu.its.12<-makeDataset_overlap(otu.its.12)
+dataset_d09_otu.its.12<-makeDataset_subset09(otu.its.12)
+dataset_d11_otu.its.12<-makeDataset_subset11(otu.its.12)
+datasetList<-list(dataset_d11_otu.its.12,
+                  dataset_d09_otu.its.12)
+datasetList.longnames<-c("2011-12 (1 yr)",
+                         "2009-12 (3 yrs)")
+datasetList.shortnames<-c("d11h12","d09h12")
+
+#
+table.name<-paste(curr.yrharv, curr.gene, sep="")
+fileName<-paste("./data_Rsynth/taxonTables_tidy/taxonTable_", table.name, "tidy.tab", sep = "")
+taxafung12 <- read.delim(fileName, stringsAsFactors = F)
+
+```
+
+## Visualize fungal community composition shifts in response to study design
+```{r Vis, include=FALSE}
+source('code/plot_ordinations.R')
+
+### overlapping species ###
+#pdf("output/overlap_sppTopoYr.pdf", width=12, height=6)
+makePlot_overlap_sppTopoYr(dataset_overlap_otu.its.12)
+#dev.off()
+
+### subsets ###
+
+# By log location
+#pdf(paste("output/subsets_logLoc.pdf", sep=""), width=4, height=4)
+subsetPlottingBy(fileName="subsets_logLoc", datasetList=datasetList, GRPname="logLoc")
+#dev.off()
+
+# By plot location
+#pdf(paste("output/subsets_topo.pdf", sep=""), width=4, height=4)
+subsetPlottingBy(fileName="subsets_topo", datasetList=datasetList, GRPname="topo")
+#dev.off()
+
+# By species
+#pdf(paste("output/subsets_topo.pdf", sep=""), width=4, height=4)
+subsetPlottingBy(fileName="subsets_species4", datasetList=datasetList, GRPname="species4")
+#dev.off()
+
+```
+
+## Do study design factors correspond to shifts in fungal community composition? (db-RDA)
+```{r Stats1, include=FALSE}
+source('code/calc_fungStats_overlap.R')
+source('code/calc_fungStats_subsets.R')
+
+### overlapping species ###
+dataset_overlap<-dataset_overlap_otu.its.12
+mat.otu.pres<-dataset_overlap[["otus"]]
+envVars<-dataset_overlap[["envs"]]
+#does predictor matrix effect community composition?
+cap.env <- capscale(mat.otu.pres ~ logLoc + species4 + topo + yrdeploy + 
+                        logLoc:yrdeploy + species4:yrdeploy + topo:yrdeploy +
+                        logLoc:species4 + logLoc:topo +
+                        species4:topo, 
+                      data=envVars, distance='jaccard')
+anova.df<-data.frame(anova(cap.env, by="terms"))
+summary(cap.env)
+plot(cap.env)
+write.csv(anova.df, file="output/rdaAnova_its12.csv")
+  
+
+### subsets ###
+
+rdaList<-list()
+for(o in 1:length(datasetList)){
+  dataset_overlap<-datasetList[[o]]
+  
+  #dataset_overlap<-dataset_overlap_otu.its.12
+  mat.otu.pres<-dataset_overlap[["otus"]]
+  envVars<-dataset_overlap[["envs"]]
+  
+  #db-RDA
+  #library(vegan)
+  cap.env <- capscale(mat.otu.pres ~ logLoc + species4 + topo,
+                      data=envVars, distance='jaccard')
+  rdaList[[o]]<-data.frame(anova(cap.env, by="terms"))
+}
+names(rdaList)<-datasetList.shortnames
+rdaList.df<-ldply(rdaList)
+terms<-c("logLoc","species4","topo", "Residual")
+rdaList.df$terms<-rep(terms, times=2)
+rdaList.df
+write.csv(rdaList.df, file="output/piecewiseRDA.csv")
+
+
+```
